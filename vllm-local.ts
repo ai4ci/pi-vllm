@@ -390,6 +390,10 @@ Accept current configuration?`;
         baseUrl: endpoint,
         reasoning: result.reasoning,
         input: ["text"] as const,
+        compat: {
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: true,
+        },
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: result.contextWindow,
         maxTokens: result.maxTokens,

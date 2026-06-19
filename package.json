@@ -8,9 +8,15 @@
     "check": "echo 'nothing to check'"
   },
   "description": "vLLM extension for pi - discover, configure, and switch to local vLLM models",
-  "keywords": ["pi-package", "vllm", "local-llm"],
+  "keywords": [
+    "pi-package",
+    "vllm",
+    "local-llm"
+  ],
   "pi": {
-    "extensions": ["./vllm-local.ts"]
+    "extensions": [
+      "./vllm-local.ts"
+    ]
   },
   "repository": {
     "type": "git",
@@ -21,6 +27,8 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@types/node": "*"
+    "@earendil-works/pi-coding-agent": "^0.79.8",
+    "@earendil-works/pi-tui": "^0.79.8",
+    "@types/node": "^26.0.0"
   }
 }
