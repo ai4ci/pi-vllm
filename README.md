@@ -53,14 +53,16 @@ Configuration is stored in `~/.pi/agent/vllm-local.json`:
       "api": "openai-completions",
       "reasoning": false,
       "contextWindow": 8192,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "temperatureScale": 1
     },
     "deepseek-ai/DeepSeek-R1": {
       "api": "openai-completions",
       "reasoning": true,
       "contextWindow": 65536,
       "maxTokens": 8192,
-      "thinkingFormat": "deepseek"
+      "thinkingFormat": "deepseek",
+      "temperatureScale": 1
     }
   }
 }
@@ -73,6 +75,8 @@ Configuration is stored in `~/.pi/agent/vllm-local.json`:
 - **Context Window**: Maximum context size in tokens
 - **Max Tokens**: Maximum output tokens
 - **Thinking Format**: How reasoning/thinking is formatted (deepseek, qwen-chat-template, or none)
+
+- **Temperature Scale**: Multiplier applied to the model's temperature before each request (default: 1, range: > 0). A value of `0.5` halves the temperature, `2.0` doubles it.
 
 ### Model Detection Heuristics
 

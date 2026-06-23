@@ -37,6 +37,7 @@ interface VllmConfig {
       contextWindow: number;
       maxTokens: number;
       thinkingFormat?: "deepseek" | "qwen-chat-template" | null;
+      temperatureScale: number;
     };
   };
 }
@@ -65,6 +66,7 @@ const DEFAULT_MODEL_CONFIG = {
   contextWindow: 131072,
   maxTokens: 16384,
   thinkingFormat: null as "deepseek" | "qwen-chat-template" | null,
+  temperatureScale: 1,
 };
 
 // =============================================================================
@@ -155,6 +157,27 @@ async function discoverModels(endpoint: string): Promise<Array<{
 // =============================================================================
 
 export default async function (pi: ExtensionAPI) {
+
+  // Intercept outgoing requests to vLLM and apply temperature scaling
+  pi.on("before_provider_request", (event, ctx) => {
+    // Only apply to our provider
+    if (ctx.model?.provider !== "vllm-local") return;
+
+    const modelId = ctx.model?.id;
+    if (!modelId) return;
+
+    const config = loadConfig();
+    const modelConfig = config.models[modelId];
+    if (!modelConfig) return;
+
+    const scale = modelConfig.temperatureScale ?? 1;
+    if (scale === 1) return; // No scaling needed
+
+    // Apply to OpenAI Chat Completions payload (most common for local servers)
+    if ("temperature" in event.payload) {
+      event.payload.temperature = (event.payload.temperature ?? 1) * scale;
+    }
+  });
   // Command: /vllm - Discover models, select one, edit config, switch to it
   pi.registerCommand("vllm", {
     description: "Switch to a vLLM model and configure it",
@@ -263,6 +286,7 @@ Thinking Format: ${currentConfigValue.thinkingFormat || "null"}
 Reasoning: ${currentConfigValue.reasoning ? "on" : "off"}
 Context Window: ${currentConfigValue.contextWindow}
 Max Tokens: ${currentConfigValue.maxTokens}
+Temperature Scale: ${currentConfigValue.temperatureScale ?? 1}
 
 Accept current configuration?`;
 
@@ -378,12 +402,25 @@ Accept current configuration?`;
         return;
       }
 
+      // Temperature scale input
+      const tempScaleStr = await ctx.ui.input(
+        `Temperature Scale [${config.models[modelId]?.temperatureScale ?? 1}]:`,
+        modelId,
+      );
+      const tempScaleNum = parseFloat(tempScaleStr || "1");
+      if (isNaN(tempScaleNum) || tempScaleNum <= 0) {
+        ctx.ui.notify("Invalid temperature scale, using default", "warning");
+        ctx.ui.notify("Configuration cancelled", "info");
+        return;
+      }
+
       // Build result
       const result = {
         api: selectedApi as "openai-completions" | "openai-responses" | "anthropic-messages",
         reasoning: selectedReasoning === "on",
         contextWindow,
         maxTokens,
+        temperatureScale: tempScaleNum,
         thinkingFormat: selectedThinkingFormat === "null" ? null : selectedThinkingFormat,
       };
 
@@ -411,6 +448,7 @@ Accept current configuration?`;
           supportsDeveloperRole: false,
           supportsReasoningEffort: true,
           thinkingFormat: result.thinkingFormat,
+          temperatureScale: result.temperatureScale,
         },
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: result.contextWindow,
@@ -469,6 +507,7 @@ async function switchToModel(
       supportsDeveloperRole: false,
       supportsReasoningEffort: true,
       thinkingFormat: result.thinkingFormat,
+      temperatureScale: result.temperatureScale,
     },
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: result.contextWindow,
