@@ -62,7 +62,7 @@ const DEFAULT_CONFIG: VllmConfig = {
 const DEFAULT_MODEL_CONFIG = {
   api: "openai-completions" as const,
   reasoning: true,
-  contextWindow: 128000,
+  contextWindow: 131072,
   maxTokens: 16384,
   thinkingFormat: null as "deepseek" | "qwen-chat-template" | null,
 };
@@ -98,9 +98,17 @@ function saveConfig(config: VllmConfig): void {
   }
 }
 
-function getOrDefaultModelConfig(modelId: string): VllmConfig["models"][string] {
+function getOrDefaultModelConfig(
+  modelId: string,
+  maxModelLen?: number
+): VllmConfig["models"][string] {
   const heuristic = detectCapabilities(modelId);
-  return { ...DEFAULT_MODEL_CONFIG, ...heuristic };
+  return {
+    ...DEFAULT_MODEL_CONFIG,
+    ...heuristic,
+    contextWindow: maxModelLen ?? DEFAULT_MODEL_CONFIG.contextWindow,
+    maxTokens: (maxModelLen) ? Math.floor(maxModelLen / 16) : DEFAULT_MODEL_CONFIG.maxTokens
+  };
 }
 
 function detectCapabilities(modelId: string): Partial<VllmConfig["models"][string]> {
@@ -124,6 +132,7 @@ function detectCapabilities(modelId: string): Partial<VllmConfig["models"][strin
 async function discoverModels(endpoint: string): Promise<Array<{
   id: string;
   name?: string;
+  max_model_len?: number;
   context_window?: number;
   max_tokens?: number;
 }>> {
@@ -133,7 +142,12 @@ async function discoverModels(endpoint: string): Promise<Array<{
   }
   const data = await response.json();
   // vLLM returns { object: "list", data: [...] }
-  return data.data || data.models || [];
+  // each model has max_model_len from vLLM API
+  return (data.data || data.models || []).map((m: any) => ({
+    ...m,
+    context_window: m.max_model_len,
+    max_tokens: 16384,
+  }));
 }
 
 // =============================================================================
@@ -159,6 +173,7 @@ export default async function (pi: ExtensionAPI) {
       let availableModels: Array<{
         id: string;
         name?: string;
+        max_model_len?: number;
         context_window?: number;
         max_tokens?: number;
       }> = [];
@@ -236,7 +251,9 @@ export default async function (pi: ExtensionAPI) {
       const modelId = selectedModelId.selectedModelId;
 
       // Get or create config for selected model
-      const currentConfigValue = config.models[modelId] || getOrDefaultModelConfig(modelId);
+      // User config takes precedence over vLLM values, which take precedence over hardcoded defaults
+      const maxModelLen = availableModels.find(m => m.id === modelId)?.max_model_len;
+      const currentConfigValue = config.models[modelId] || getOrDefaultModelConfig(modelId, maxModelLen);
 
       // Show current configuration and ask user to accept or modify
       const configText = `Current Configuration for ${modelId}:
@@ -265,7 +282,7 @@ Accept current configuration?`;
 
         // Update config file (ensure it's saved)
         if (!config.models[modelId]) {
-          config.models[modelId] = getOrDefaultModelConfig(modelId);
+          config.models[modelId] = getOrDefaultModelConfig(modelId, maxModelLen);
         }
         config.models[modelId] = { ...config.models[modelId], ...result };
         saveConfig(config);
@@ -393,6 +410,7 @@ Accept current configuration?`;
         compat: {
           supportsDeveloperRole: false,
           supportsReasoningEffort: true,
+          thinkingFormat: result.thinkingFormat,
         },
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: result.contextWindow,
@@ -447,6 +465,11 @@ async function switchToModel(
     baseUrl: endpoint,
     reasoning: result.reasoning,
     input: ["text"] as const,
+    compat: {
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
+      thinkingFormat: result.thinkingFormat,
+    },
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: result.contextWindow,
     maxTokens: result.maxTokens,
