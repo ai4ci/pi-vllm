@@ -21,7 +21,6 @@ import { Container, SelectList, Text } from "@earendil-works/pi-tui";
 
 interface VllmConfig {
   endpoint: string;
-  lastModel?: string;
   defaults: {
     supportsDeveloperRole: boolean;
     supportsReasoningEffort: boolean;
@@ -212,9 +211,9 @@ export function buildModelRegistry(
 // =============================================================================
 
 export default async function (pi: ExtensionAPI) {
-  // Register saved + served models at startup so pi can resolve persisted
-  // vllm-local model selections after restart/resume (was: only registered
-  // inside /vllm, so boot fell back to the next provider).
+  // Register saved + served models at startup so pi can resolve the persisted
+  // model choice (pi.setModel also records defaultModel; unregistered provider
+  // was why boot/resume fell back to the next provider).
   const bootConfig = loadConfig();
   let served: ServedModel[] = [];
   try {
@@ -230,20 +229,25 @@ export default async function (pi: ExtensionAPI) {
       api: "openai-completions",
       models: bootModels,
     });
-    // Restore last choice. If it's gone and the server now serves exactly
-    // one model, adopt it (heuristic config). Ambiguity leaves the choice to pi.
-    let target = bootModels.find((m) => m.id === bootConfig.lastModel);
-    if (!target && bootConfig.lastModel && served.length === 1) {
-      target = bootModels.find((m) => m.id === served[0].id);
-      if (target) {
-        bootConfig.lastModel = target.id;
-        saveConfig(bootConfig);
-      }
-    }
-    // ponytail: on resume this may race the session's own model entry; the
-    // session wins if it's applied later. Revisit if resume picks wrong model.
-    if (target) await pi.setModel(target);
   }
+
+  // pi.setModel is a runtime action — calling it in the factory throws
+  // "Extension runtime not initialized". Auto-adopt happens at session_start,
+  // and only if pi restored a vllm-local model that the server no longer serves.
+  pi.on("session_start", async (_event, ctx) => {
+    if (ctx.model?.provider !== "vllm-local" || served.length === 0) return;
+    const staleId = ctx.model.id;
+    if (served.some((m) => m.id === staleId)) return; // model still served, nothing to do
+    const target = served.length === 1
+      ? buildModelRegistry(bootConfig, served).find((m) => m.id === served[0].id)
+      : undefined;
+    if (target) {
+      await pi.setModel(target);
+      ctx.ui.notify(`vLLM no longer serves ${staleId}; switched to ${target.id}`, "info");
+    } else {
+      ctx.ui.notify(`vLLM no longer serves ${staleId}. Run /vllm to pick a model.`, "warning");
+    }
+  });
 
   // Intercept outgoing requests to vLLM and apply temperature scaling
   pi.on("before_provider_request", (event, ctx) => {
@@ -520,7 +524,6 @@ async function switchToModel(
 ): Promise<void> {
   const config = loadConfig();
   config.models[modelId] = { ...getOrDefaultModelConfig(modelId), ...config.models[modelId], ...result };
-  config.lastModel = modelId;
   saveConfig(config);
 
   const models = buildModelRegistry(config, []);
