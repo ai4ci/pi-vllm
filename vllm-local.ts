@@ -10,7 +10,7 @@
  * No provider registration - vLLM models don't appear in /model dialog.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Container, SelectList, Text } from "@earendil-works/pi-tui";
@@ -21,6 +21,7 @@ import { Container, SelectList, Text } from "@earendil-works/pi-tui";
 
 interface VllmConfig {
   endpoint: string;
+  lastModel?: string;
   defaults: {
     supportsDeveloperRole: boolean;
     supportsReasoningEffort: boolean;
@@ -100,6 +101,14 @@ function saveConfig(config: VllmConfig): void {
   }
 }
 
+// Parse token counts like "64K", "1M", "131072" (K=1024, M=1024*1024). NaN if invalid.
+export function parseTokenCount(s: string): number {
+  const m = s.trim().match(/^(\d+(?:\.\d+)?)([km])?$/i);
+  if (!m) return NaN;
+  const mult = !m[2] ? 1 : m[2].toUpperCase() === "K" ? 1024 : 1024 * 1024;
+  return Math.floor(parseFloat(m[1]) * mult);
+}
+
 function getOrDefaultModelConfig(
   modelId: string,
   maxModelLen?: number
@@ -131,14 +140,17 @@ function detectCapabilities(modelId: string): Partial<VllmConfig["models"][strin
 // Model Discovery
 // =============================================================================
 
-async function discoverModels(endpoint: string): Promise<Array<{
+interface ServedModel {
   id: string;
   name?: string;
   max_model_len?: number;
   context_window?: number;
   max_tokens?: number;
-}>> {
-  const response = await fetch(`${endpoint}/models`);
+}
+
+async function discoverModels(endpoint: string): Promise<ServedModel[]> {
+  // Short timeout: pi awaits the extension factory, so a dead server must not stall startup
+  const response = await fetch(`${endpoint}/models`, { signal: AbortSignal.timeout(2000) });
   if (!response.ok) {
     throw new Error(`Failed to fetch models: ${response.statusText}`);
   }
@@ -153,10 +165,84 @@ async function discoverModels(endpoint: string): Promise<Array<{
 }
 
 // =============================================================================
+// Model Registry
+// =============================================================================
+
+function toModelObj(
+  id: string,
+  cfg: VllmConfig["models"][string],
+  endpoint: string
+): ProviderModelConfig {
+  return {
+    id,
+    name: id,
+    api: cfg.api as any,
+    baseUrl: endpoint,
+    reasoning: cfg.reasoning,
+    input: ["text"],
+    compat: {
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
+      thinkingFormat: cfg.thinkingFormat ?? undefined,
+      temperatureScale: cfg.temperatureScale,
+    } as ProviderModelConfig["compat"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: cfg.contextWindow,
+    maxTokens: cfg.maxTokens,
+  };
+}
+
+// Union of saved configs and currently-served models; saved values win,
+// unsaved/newly-served models get heuristics + live max_model_len.
+export function buildModelRegistry(
+  config: VllmConfig,
+  served: ServedModel[]
+): ProviderModelConfig[] {
+  const ids = [...new Set([...Object.keys(config.models), ...served.map((m) => m.id)])];
+  return ids.map((id) => {
+    const maxModelLen = served.find((m) => m.id === id)?.max_model_len;
+    const cfg = { ...getOrDefaultModelConfig(id, maxModelLen), ...config.models[id] };
+    return toModelObj(id, cfg, config.endpoint);
+  });
+}
+
+// =============================================================================
 // Extension
 // =============================================================================
 
 export default async function (pi: ExtensionAPI) {
+  // Register saved + served models at startup so pi can resolve persisted
+  // vllm-local model selections after restart/resume (was: only registered
+  // inside /vllm, so boot fell back to the next provider).
+  const bootConfig = loadConfig();
+  let served: ServedModel[] = [];
+  try {
+    served = await discoverModels(bootConfig.endpoint);
+  } catch {
+    // Server down: still register saved models below so resume binds.
+  }
+  const bootModels = buildModelRegistry(bootConfig, served);
+  if (bootModels.length > 0) {
+    pi.registerProvider("vllm-local", {
+      baseUrl: bootConfig.endpoint,
+      apiKey: "local-model",
+      api: "openai-completions",
+      models: bootModels,
+    });
+    // Restore last choice. If it's gone and the server now serves exactly
+    // one model, adopt it (heuristic config). Ambiguity leaves the choice to pi.
+    let target = bootModels.find((m) => m.id === bootConfig.lastModel);
+    if (!target && bootConfig.lastModel && served.length === 1) {
+      target = bootModels.find((m) => m.id === served[0].id);
+      if (target) {
+        bootConfig.lastModel = target.id;
+        saveConfig(bootConfig);
+      }
+    }
+    // ponytail: on resume this may race the session's own model entry; the
+    // session wins if it's applied later. Revisit if resume picks wrong model.
+    if (target) await pi.setModel(target);
+  }
 
   // Intercept outgoing requests to vLLM and apply temperature scaling
   pi.on("before_provider_request", (event, ctx) => {
@@ -301,22 +387,14 @@ Accept current configuration?`;
       }
 
       if (acceptConfig) {
-        // Use current config without changes
-        const result = currentConfigValue;
-
-        // Update config file (ensure it's saved)
-        if (!config.models[modelId]) {
-          config.models[modelId] = getOrDefaultModelConfig(modelId, maxModelLen);
-        }
-        config.models[modelId] = { ...config.models[modelId], ...result };
-        saveConfig(config);
-
-        // Proceed to model switch with current config
-        const switchSuccess = await switchToModel(pi, ctx, modelId, result, endpoint);
+        // Use current config without changes (switchToModel re-saves it)
+        await switchToModel(pi, ctx, modelId, currentConfigValue, endpoint);
         return;
       }
 
-      // User wants to modify - show individual config options
+      // User wants to modify - fall back to API-discovered defaults for sizing
+      const apiDefaults = getOrDefaultModelConfig(modelId, maxModelLen);
+
       // API Type
       const apiOptions = ["openai-completions", "openai-responses", "anthropic-messages"];
       const selectedApi = await ctx.ui.select(
@@ -360,7 +438,7 @@ Accept current configuration?`;
 
       // Context Window (using input dialog with default in title)
       const contextWindowStr = await ctx.ui.input(
-        `Context Window (tokens) [current: ${currentConfigValue.contextWindow}]:`,
+        `Context Window (tokens) [api default: ${apiDefaults.contextWindow}]:`,
         ""
       );
 
@@ -371,8 +449,8 @@ Accept current configuration?`;
 
       // If user left blank, use default
       const contextWindow = contextWindowStr.trim() === "" 
-        ? currentConfigValue.contextWindow 
-        : parseInt(contextWindowStr, 10);
+        ? apiDefaults.contextWindow 
+        : parseTokenCount(contextWindowStr);
 
       if (isNaN(contextWindow) || contextWindow < 1024) {
         ctx.ui.notify("Invalid context window, using default", "warning");
@@ -382,7 +460,7 @@ Accept current configuration?`;
 
       // Max Tokens (using input dialog with default in title)
       const maxTokensStr = await ctx.ui.input(
-        `Max Tokens (tokens) [current: ${currentConfigValue.maxTokens}]:`,
+        `Max Tokens (tokens) [api default: ${apiDefaults.maxTokens}]:`,
         ""
       );
 
@@ -393,8 +471,8 @@ Accept current configuration?`;
 
       // If user left blank, use default
       const maxTokens = maxTokensStr.trim() === ""
-        ? currentConfigValue.maxTokens
-        : parseInt(maxTokensStr, 10);
+        ? apiDefaults.maxTokens
+        : parseTokenCount(maxTokensStr);
 
       if (isNaN(maxTokens) || maxTokens < 1024) {
         ctx.ui.notify("Invalid max tokens, using default", "warning");
@@ -424,106 +502,36 @@ Accept current configuration?`;
         thinkingFormat: selectedThinkingFormat === "null" ? null : selectedThinkingFormat,
       };
 
-      // Update config file
-      if (!config.models[modelId]) {
-        config.models[modelId] = getOrDefaultModelConfig(modelId);
-      }
-      config.models[modelId] = {
-        ...config.models[modelId],
-        ...result,
-      };
-      saveConfig(config);
-
-      // Register a temporary provider with just this model so we can switch to it
-      // Create a model object for setModel
-      const modelObj = {
-        id: modelId,
-        name: modelId,
-        api: result.api as any,
-        provider: "vllm-local",
-        baseUrl: endpoint,
-        reasoning: result.reasoning,
-        input: ["text"] as const,
-        compat: {
-          supportsDeveloperRole: false,
-          supportsReasoningEffort: true,
-          thinkingFormat: result.thinkingFormat,
-          temperatureScale: result.temperatureScale,
-        },
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: result.contextWindow,
-        maxTokens: result.maxTokens,
-      };
-
-      // Register provider with just this model
-      pi.registerProvider("vllm-local", {
-        baseUrl: endpoint,
-        apiKey: "local-model",
-        api: result.api,
-        models: [modelObj],
-      });
-
-      // Switch to the selected model
-      const success = await pi.setModel(modelObj);
-
-      if (success) {
-        ctx.ui.notify(`Switched to ${modelId} with custom configuration`, "success");
-      } else {
-        ctx.ui.notify(`Failed to switch to ${modelId}. Check if API key is configured.`, "error");
-      }
+      await switchToModel(pi, ctx, modelId, result, endpoint);
     },
   });
 }
 
 
 
-// Helper function to switch to model with given configuration
+// Save config, (re)register all known models, remember the choice, switch to it.
 async function switchToModel(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   modelId: string,
-  result: ModelConfig,
+  result: VllmConfig["models"][string],
   endpoint: string
 ): Promise<void> {
-  // Update config file (ensure it's saved)
   const config = loadConfig();
-  if (!config.models[modelId]) {
-    config.models[modelId] = getOrDefaultModelConfig(modelId);
-  }
-  config.models[modelId] = { ...config.models[modelId], ...result };
+  config.models[modelId] = { ...getOrDefaultModelConfig(modelId), ...config.models[modelId], ...result };
+  config.lastModel = modelId;
   saveConfig(config);
 
-  // Register a temporary provider with just this model so we can switch to it
-  // Create a model object for setModel
-  const modelObj = {
-    id: modelId,
-    name: modelId,
-    api: result.api as any,
-    provider: "vllm-local",
-    baseUrl: endpoint,
-    reasoning: result.reasoning,
-    input: ["text"] as const,
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      thinkingFormat: result.thinkingFormat,
-      temperatureScale: result.temperatureScale,
-    },
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: result.contextWindow,
-    maxTokens: result.maxTokens,
-  };
-
-  // Register provider with just this model
+  const models = buildModelRegistry(config, []);
   pi.registerProvider("vllm-local", {
     baseUrl: endpoint,
     apiKey: "local-model",
-    api: result.api,
-    models: [modelObj],
+    api: "openai-completions",
+    models,
   });
 
-  // Switch to the selected model
-  const success = await pi.setModel(modelObj);
+  const target = models.find((m) => m.id === modelId)!;
+  const success = await pi.setModel(target);
 
   if (success) {
     ctx.ui.notify(`Switched to ${modelId} with custom configuration`, "success");
