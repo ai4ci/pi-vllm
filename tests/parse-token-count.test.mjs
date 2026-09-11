@@ -31,6 +31,7 @@ const old = models.find((m) => m.id === "old-model");
 assert.equal(old.contextWindow, 999); // saved value wins over server
 assert.equal(old.api, "anthropic-messages");
 const fresh = models.find((m) => m.id === "new-deepseek-v3");
+assert.equal(fresh.provider, "vllm-local"); // setModel resolves auth via model.provider
 assert.equal(fresh.contextWindow, 131072); // server value
 assert.equal(fresh.maxTokens, 8192); // max_model_len / 16
 assert.equal(fresh.compat.thinkingFormat, "deepseek"); // autodetect heuristic

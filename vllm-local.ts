@@ -172,10 +172,11 @@ function toModelObj(
   id: string,
   cfg: VllmConfig["models"][string],
   endpoint: string
-): ProviderModelConfig {
+): ProviderModelConfig & { provider: string } {
   return {
     id,
     name: id,
+    provider: "vllm-local", // setModel resolves auth via model.provider — must be set
     api: cfg.api as any,
     baseUrl: endpoint,
     reasoning: cfg.reasoning,
