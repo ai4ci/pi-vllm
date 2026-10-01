@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { parseTokenCount, buildModelRegistry } from "../vllm-local.ts";
+import { parseTokenCount, buildModelRegistry, endpointForPort } from "../vllm-local.ts";
+
+assert.equal(endpointForPort("8000"), "http://localhost:8000/v1");
+assert.equal(endpointForPort(8000), "http://localhost:8000/v1");
+assert.equal(endpointForPort("http://127.0.0.1:8000/v1"), "http://127.0.0.1:8000/v1");
+assert.equal(endpointForPort("", "http://localhost:11434/v1"), "http://localhost:11434/v1");
+console.log("endpointForPort ok");
 
 assert.equal(parseTokenCount("64K"), 65536);
 assert.equal(parseTokenCount("64k"), 65536);

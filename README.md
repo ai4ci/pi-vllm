@@ -22,7 +22,10 @@ Run `/vllm` from anywhere in pi:
 
 ```
 /vllm
+/vllm [port]
 ```
+
+You can optionally specify a local port or URL (e.g. `/vllm 8000`). If no server is found on the default endpoint (11434), you will be prompted to enter a port or URL interactively.
 
 This will:
 1. Query your local vLLM server for available models

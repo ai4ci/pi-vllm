@@ -100,7 +100,17 @@ function saveConfig(config: VllmConfig): void {
   }
 }
 
-// Parse token counts like "64K", "1M", "131072" (K=1024, M=1024*1024). NaN if invalid.
+export function endpointForPort(portOrEndpoint: string | number, baseEndpoint = "http://localhost:11434/v1"): string {
+  const p = String(portOrEndpoint).trim();
+  if (!p) return baseEndpoint;
+  if (/^\d+$/.test(p)) {
+    const url = new URL(baseEndpoint);
+    url.port = p;
+    return url.toString().replace(/\/$/, "");
+  }
+  return p;
+}
+
 export function parseTokenCount(s: string): number {
   const m = s.trim().match(/^(\d+(?:\.\d+)?)([km])?$/i);
   if (!m) return NaN;
@@ -269,9 +279,9 @@ export default async function (pi: ExtensionAPI) {
       event.payload.temperature = (event.payload.temperature ?? 1) * scale;
     }
   });
-  // Command: /vllm - Discover models, select one, edit config, switch to it
+  // Command: /vllm [port] - Discover models, select one, edit config, switch to it
   pi.registerCommand("vllm", {
-    description: "Switch to a vLLM model and configure it",
+    description: "Switch to a vLLM model and configure it (optional: /vllm [port])",
     handler: async (args, ctx) => {
       // Check if we're in TUI mode
       if (ctx.mode !== "tui") {
@@ -279,9 +289,9 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
 
-      // Load config to get endpoint
+      // Load config to get endpoint, override with port arg if provided
       const config = loadConfig();
-      const endpoint = config.endpoint;
+      let endpoint = args?.trim() ? endpointForPort(args.trim(), config.endpoint) : config.endpoint;
 
       // Discover models from local vLLM API
       let availableModels: Array<{
@@ -295,12 +305,31 @@ export default async function (pi: ExtensionAPI) {
       try {
         availableModels = await discoverModels(endpoint);
       } catch (error) {
-        ctx.ui.notify(`Failed to discover vLLM models: ${error instanceof Error ? error.message : String(error)}`, "error");
-        return;
+        // If not explicitly passed as arg, prompt user for an alternate port/endpoint
+        if (!args?.trim()) {
+          const customPort = await ctx.ui.input(
+            `No server detected at ${endpoint}. Enter local port or URL:`,
+            "11434"
+          );
+          if (customPort?.trim()) {
+            endpoint = endpointForPort(customPort.trim(), config.endpoint);
+            try {
+              availableModels = await discoverModels(endpoint);
+            } catch (retryErr) {
+              ctx.ui.notify(`Failed to discover vLLM models at ${endpoint}: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`, "error");
+              return;
+            }
+          } else {
+            return;
+          }
+        } else {
+          ctx.ui.notify(`Failed to discover vLLM models at ${endpoint}: ${error instanceof Error ? error.message : String(error)}`, "error");
+          return;
+        }
       }
 
       if (availableModels.length === 0) {
-        ctx.ui.notify("No models found on vLLM server", "warning");
+        ctx.ui.notify(`No models found on vLLM server at ${endpoint}`, "warning");
         return;
       }
 
@@ -523,6 +552,7 @@ async function switchToModel(
   endpoint: string
 ): Promise<void> {
   const config = loadConfig();
+  config.endpoint = endpoint;
   config.models[modelId] = { ...getOrDefaultModelConfig(modelId), ...config.models[modelId], ...result };
   saveConfig(config);
 

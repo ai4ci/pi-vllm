@@ -23,7 +23,7 @@
     "url": "https://github.com/ai4ci/pi-vllm.git"
   },
   "license": "MIT",
-  "dependencies": {
+  "peerDependencies": {
     "typebox": "*"
   },
   "devDependencies": {
