@@ -27,6 +27,8 @@ Run `/vllm` from anywhere in pi:
 
 You can optionally specify a local port or URL (e.g. `/vllm 8000`). If no server is found on the default endpoint (11434), you will be prompted to enter a port or URL interactively.
 
+Use `/vllm --version` to print the loaded extension version and a content hash of the running build. It also flags when the file on disk differs from what is loaded, so a stale extension can't go unnoticed.
+
 This will:
 1. Query your local vLLM server for available models
 2. Show a menu of all discovered models

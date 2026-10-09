@@ -76,6 +76,8 @@ This document defines the requirements, design constraints, and technical implem
 | `contextWindow` | number | No | `128000` | Context window in tokens |
 | `maxTokens` | number | No | `16384` | Maximum generation tokens |
 | `thinkingFormat` | string | No | `null` | Thinking format option |
+| `thinkingLevelMap` | object | No | auto | Per-level thinking override; `null` hides a level. When unset, the extension probes each model (one 1-token request per level) for the thinking levels its chat template actually accepts and advertises only those, for reasoning models. |
+| `thinkingLevels` | string[] | No | — | Accepted `reasoning_effort` values for this model, stored per id. Probing is in-memory only until you reload levels in the `/vllm` configure flow, which persists them here. |
 
 ## 3. Automatic Discovery on `/vllm`
 **Requirement**: Query local vLLM API when `/vllm` is invoked.
