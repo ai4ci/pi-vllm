@@ -22,6 +22,14 @@
     "type": "git",
     "url": "https://github.com/ai4ci/pi-vllm.git"
   },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "vllm-local.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "peerDependencies": {
     "typebox": "*"

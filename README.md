@@ -12,7 +12,13 @@ The vLLM extension provides a single `/vllm` command that lets you:
 
 ## Installation
 
-The extension is automatically loaded from `.pi/extensions/vllm-local.ts` when pi starts.
+Install the npm package from pi:
+
+```sh
+pi install npm:@ai4ci/pi-vllm
+```
+
+Pi loads the `/vllm` extension from the installed package when it starts.
 
 ## Usage
 
